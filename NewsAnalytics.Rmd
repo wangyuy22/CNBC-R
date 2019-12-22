@@ -1,0 +1,151 @@
+---
+title: "News Analytics by Yuyang Wang"
+output: html_notebook
+---
+
+
+```{r}
+#install.packages("tidyverse")
+install.packages("pillar")
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(tm)
+library(topicmodels) 
+library(stringr)
+library(wordcloud)
+library(rvest)
+library(stringi)
+```
+
+```{r}
+#load in data
+news_articles = read_csv("/Users/yuyangwang 1/Desktop/Penn/Course Work/19-Fall/OIDD 245/News Analytics/NewsArticles.csv")
+```
+
+Part 1:
+
+```{r}
+#Make the first 1000 into corpuses
+reviews = VCorpus(VectorSource(news_articles[1:8000,]$content))
+
+#clean data
+reviews = tm_map(reviews, removePunctuation)
+reviews = tm_map(reviews, removeNumbers)
+reviews = tm_map(reviews, content_transformer(removeWords), stopwords("SMART"), lazy=TRUE)  
+reviews = tm_map(reviews, content_transformer(tolower), lazy=TRUE) 
+reviews = tm_map(reviews, content_transformer(removeWords), c("til")) 
+reviews = tm_map(reviews, stripWhitespace)
+
+#make them into document term matrices
+dtm = DocumentTermMatrix(reviews)
+dtms = removeSparseTerms(dtm, .985)
+dtm_matrix = as.matrix(dtms)
+```
+
+```{r}
+#running LDA to find 
+terms = rowSums(dtm_matrix) != 0
+dtm_matrix = dtm_matrix[terms,]
+ldaOut = LDA(dtm_matrix, 10, method="Gibbs")
+words = terms(ldaOut,10)
+
+#Assigning Names to the Topics
+Names = c("Macroeconomics","Business","Tech", "Growth", "Revenue and Value","Finance","Invesment","Healthcare","Daily News","Politics")
+```
+
+```{r}
+words
+```
+
+Part 2:
+
+```{r}
+#Scrape for the url of articles on the first page of CNBC
+list = c()
+cnbc <- read_html("https://www.cnbc.com/us-news")
+list = c(list, cnbc %>% html_nodes("a") %>% html_attr('href'))
+```
+
+```{r}
+#clean the data
+checkLink = function(text) {
+  return (stri_detect_regex(text,"^https://www.cnbc.com/2019/12"))
+}
+urls = unique(list[sapply(list, checkLink)])
+url_clean = urls[!is.na(urls)]
+
+```
+
+```{r}
+#function to clean the text of one article
+articleClean = function(url) {
+  article = read_html(url)
+  clist = c()
+  clist = c(clist, article %>% html_nodes("p") %>% html_text())
+  text = paste(clist[1:((length(clist))-7)], collapse="")
+  text = gsub("\t", " ", text)
+  text = gsub("\n", " ", text)
+  #text = gsub("[\\]", "", text)
+  return (text)
+}
+
+#applying it to all articles
+texts = sapply(url_clean, articleClean)
+#texts[1]
+```
+
+Part 3: Classify news articles using initial topic model
+
+```{r}
+#Create dictionary
+dic = Terms(dtms)
+
+#Initiliaze the list of topics
+topic_rankings = c()
+
+for (i in texts) {
+  #Choose article
+  chosen_art = VCorpus(VectorSource(i))
+
+  #Clean data
+  chosen_art <- tm_map(chosen_art, removePunctuation)
+  chosen_art <- tm_map(chosen_art, removeNumbers)
+  chosen_art <- tm_map(chosen_art, content_transformer(removeWords), stopwords("SMART"), lazy=TRUE)  
+  chosen_art <- tm_map(chosen_art, content_transformer(tolower), lazy=TRUE) 
+  chosen_art <- tm_map(chosen_art, content_transformer(removeWords), c("til")) 
+  chosen_art <- tm_map(chosen_art, stripWhitespace)
+  
+  # Specify this dictionary when creating the dtm for the new articles, which will limit the dtm it creates to only the words that also appeared in the archive. 
+  
+  new_dtm = DocumentTermMatrix(chosen_art, control=list(dictionary = dic))
+  new_dtm = new_dtm[rowSums(as.matrix(new_dtm))!=0,]
+  topic_probabilities = posterior(ldaOut, new_dtm)
+  
+  #order topics to see which topic is most likely to be associated to given document
+  topic_rankings = c(topic_rankings, Names[order(topic_probabilities$topics,decreasing = TRUE)[1]])
+}
+
+```
+
+```{r}
+#Initialize Data Frame
+table = data.frame("text"=texts,"topic"=topic_rankings)
+
+#Extract Article Name
+table$title = sapply(url_clean, function(x) gsub("https://www.cnbc.com/2019/11/[0-9][0-9]/","",x))
+
+#Clean Relevant Links
+table$title = sapply(table$title, function(x) gsub("video","",x))
+table$title = sapply(table$title, function(x) gsub("-"," ",x))
+table$title = sapply(table$title, function(x) gsub("html","",x))
+row.names(table) = c()
+```
+
+```{r}
+#get 10 article and print their assigned topic
+#press the right arrow to see the article contents, their title, and assigned topic
+head(table[,1:3], n = 10)
+```
+
